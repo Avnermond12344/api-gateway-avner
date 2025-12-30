@@ -4,8 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
+	"time"
 )
+
+var sessions = map[string]string{} // sessionID -> userID
+
+func generateSessionID() string {
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
+}
 
 // School structure
 type School struct {
@@ -14,11 +28,6 @@ type School struct {
 }
 
 type Grade struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-type Class struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
@@ -33,6 +42,15 @@ type EquipmentListResponse struct {
 	Items []Equipment `json:"items"`
 }
 
+func JSONError(w http.ResponseWriter, err string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	errEncode := json.NewEncoder(w).Encode(map[string]string{"error": err})
+	if errEncode != nil {
+		log.Printf("Failed to encode JSON error response: %v", errEncode)
+	}
+}
+
 // =====NEW=====
 // login
 type User struct {
@@ -43,12 +61,17 @@ type User struct {
 
 func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Allow requests from any origin during development (change this for production!)
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		// Allow only the frontend origin
+		if origin == "http://localhost:3000" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		// For production, use your real frontend URL above
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		// Handle preflight requests
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -59,12 +82,13 @@ func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func main() {
-	// Handler for getSchools, getGrades, getClasses, getEquipment
+	// Handler for getSchools, getGrades, getEquipment
 	http.HandleFunc("/api/schools", enableCORS(getSchoolsHandler))
 	http.HandleFunc("/api/grades", enableCORS(getGradesHandler))
-	http.HandleFunc("/api/classes", enableCORS(getClassesHandler))
 	http.HandleFunc("/api/equipment", enableCORS(getEquipmentListsHandler))
+	http.HandleFunc("/api/auth/status", enableCORS(authStatusHandler))
 	http.HandleFunc("/api/login", enableCORS(postLoginHandler))
+	http.HandleFunc("/api/logout", enableCORS(logoutHandler))
 	http.HandleFunc("/api/cart", enableCORS(getPostCartHandler))
 
 	// Start the API Gateway server
@@ -87,7 +111,7 @@ func getSchoolsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Convert to Json
 	if err := json.NewEncoder(w).Encode(schools); err != nil {
-		http.Error(w, "Failed to encode schools response", http.StatusInternalServerError)
+		JSONError(w, "Failed to encode schools response", http.StatusInternalServerError)
 		log.Printf("Error encoding response: %v", err)
 		return
 	}
@@ -102,7 +126,7 @@ func getGradesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Input Validation: Check if the required parameter is missing
 	if schoolID == "" {
-		http.Error(w, "Missing required query parameter: school_id", http.StatusBadRequest)
+		JSONError(w, "Missing required query parameter: school_id", http.StatusBadRequest)
 		return
 	}
 
@@ -117,72 +141,37 @@ func getGradesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Convert to Json
 	if err := json.NewEncoder(w).Encode(grades); err != nil {
-		http.Error(w, "Failed to encode grades response", http.StatusInternalServerError)
+		JSONError(w, "Failed to encode grades response", http.StatusInternalServerError)
 		log.Printf("Error encoding response: %v", err)
 		return
 	}
 	log.Printf("Successfully served /api/grades request")
 }
 
-func getClassesHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Extract the required query parameters
-	schoolID := r.URL.Query().Get("school_id")
-	gradeID := r.URL.Query().Get("grade_id")
-
-	// 1. Input Validation: Check if any required parameter is missing
-	if schoolID == "" || gradeID == "" {
-		http.Error(w, "Missing required query parameters: school_id or grade_id", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Received request for classes in school ID: %s, Grade ID: %s", schoolID, gradeID)
-
-	// LATER: The mock data here would be filtered based on schoolID and gradeID
-	// For now, we return the full mock list regardless of the IDs.
-
-	// LATER: connect to database, extract corresponding list and parse it
-	classes := GetClassesByGradeID(schoolID, gradeID)
-
-	// Convert to Json
-	if err := json.NewEncoder(w).Encode(classes); err != nil {
-		http.Error(w, "Failed to encode classes response", http.StatusInternalServerError)
-		log.Printf("Error encoding response: %v", err)
-		return
-	}
-	log.Printf("Successfully served /api/classes request")
-
-}
-
 func getEquipmentListsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Extract the required query parameters (unchanged)
+	// Extract the required query parameters (updated)
 	schoolID := r.URL.Query().Get("school_id")
 	gradeID := r.URL.Query().Get("grade_id")
-	classID := r.URL.Query().Get("class_id")
 
-	// 1. Input Validation (unchanged)
-	if schoolID == "" || gradeID == "" || classID == "" {
-		http.Error(w, "Missing required query parameters: school_id, grade_id, or class_id", http.StatusBadRequest)
+	// 1. Input Validation (updated)
+	if schoolID == "" || gradeID == "" {
+		JSONError(w, "Missing required query parameters: school_id or grade_id", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Received request for equipment list: School=%s, Grade=%s, Class=%s", schoolID, gradeID, classID)
+	log.Printf("Received request for equipment list: School=%s, Grade=%s", schoolID, gradeID)
 
 	// LATER: connect to database, extract corresponding list and parse it
-	equipment := GetEquipmentList(schoolID, gradeID, classID)
+	equipment := GetEquipmentList(schoolID, gradeID)
 
-	// --- CRITICAL CHANGE STARTS HERE ---
-	// 1. Wrap the equipment slice into the structured response object
 	response := EquipmentListResponse{
 		Items: equipment,
 	}
 
-	// 2. Encode the structured response object
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode equipment response", http.StatusInternalServerError)
+		JSONError(w, "Failed to encode equipment response", http.StatusInternalServerError)
 		log.Printf("Error encoding response: %v", err)
 		return
 	}
@@ -191,9 +180,35 @@ func getEquipmentListsHandler(w http.ResponseWriter, r *http.Request) {
 
 // =====NEW=====
 // adding handlers to login page & shopping cart
+func authStatusHandler(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("sessionid")
+	if err != nil {
+		JSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	userID, exists := sessions[cookie.Value]
+	if !exists {
+		JSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	for _, user := range MockUsers {
+		if user.UserID == userID {
+			err := json.NewEncoder(w).Encode(map[string]string{"userid": user.UserID, "username": user.Username})
+			if err != nil {
+				log.Printf("Failed to encode auth status response: %v", err)
+			}
+			return
+		}
+	}
+
+	JSONError(w, "Unauthorized", http.StatusUnauthorized)
+}
+
 func postLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -203,48 +218,84 @@ func postLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		JSONError(w, "Failed to decode request body", http.StatusBadRequest)
 		return
 	}
 
 	for _, user := range MockUsers {
 		if user.Username == credentials.Username && user.Password == credentials.Password {
-			json.NewEncoder(w).Encode(map[string]string{"userid": user.UserID})
+			// Session generation
+			sessionID := generateSessionID()
+			sessions[sessionID] = user.UserID
+
+			// Cookie setting
+			http.SetCookie(w, &http.Cookie{
+				Name:     "sessionid",
+				Value:    sessionID,
+				Path:     "/",
+				HttpOnly: true,
+				//Secure: true, // Uncomment this line if using HTTPS
+				//SameSite: http.SameSiteStrictMode,
+			})
+			err := json.NewEncoder(w).Encode(map[string]string{"userid": user.UserID, "username": user.Username})
+			if err != nil {
+				log.Printf("Failed to encode login response: %v", err)
+			}
 			return
 		}
 	}
 
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	JSONError(w, "Incorrect username or password. Please try again.", http.StatusUnauthorized)
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("sessionid")
+	if err == nil {
+		delete(sessions, cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "sessionid",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+	w.WriteHeader(http.StatusOK)
 }
 
 func getPostCartHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.URL.Query().Get("userid")
 	if userID == "" {
-		http.Error(w, "Missing userid", http.StatusBadRequest)
+		JSONError(w, "Missing required query parameter: userid", http.StatusBadRequest)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		// Return existing cart
+		// Return existing cart (now returns []CartEntry)
 		cart, exists := MockCarts[userID]
 		if !exists {
-			cart = []Equipment{} // Return empty list if no cart exists
+			cart = []CartEntry{} // Return empty list if no cart exists
 		}
-		json.NewEncoder(w).Encode(cart)
+		err := json.NewEncoder(w).Encode(cart)
+		if err != nil {
+			log.Printf("Failed to encode cart response: %v", err)
+		}
 
 	case http.MethodPost, http.MethodPut:
-		// Update the cart
-		var newItems []Equipment
-		if err := json.NewDecoder(r.Body).Decode(&newItems); err != nil {
-			http.Error(w, "Invalid data", http.StatusBadRequest)
+		// Update the cart (expects []CartEntry)
+		var newEntries []CartEntry
+		if err := json.NewDecoder(r.Body).Decode(&newEntries); err != nil {
+			JSONError(w, "Failed to decode request body", http.StatusBadRequest)
 			return
 		}
-		MockCarts[userID] = newItems
+		MockCarts[userID] = newEntries
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Cart updated successfully")
+		if _, err := fmt.Fprintf(w, "Cart updated successfully"); err != nil {
+			log.Printf("Failed to write cart update response: %v", err)
+		}
 
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
