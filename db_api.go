@@ -1,10 +1,10 @@
 package main
 
-func getSchoolsList() []School {
+func getSchools() []School {
 	return GetSchools() // Mock_db. We should Later change to DB.getSchoolsList()
 }
 
-func getGradesList(schoolID string) []Grade {
+func getGrades(schoolID string) []Grade {
 	return GetGradesBySchoolID(schoolID) // Mock_db. We should Later change to DB.getGradesList(schoolID)
 }
 
@@ -26,14 +26,19 @@ func getUsernameFromUserID(userID string) string {
 	// Mock_db. We should Later change to DB.IsValidUserID(userID)
 	for _, user := range MockUsers {
 		if user.UserID == userID {
-			return user.UserID
+			return user.Username
 		}
 	}
 	return ""
 }
 
 func getCartByUserID(userID string) []CartEntry {
-	return MockCarts[userID] //Mock_db. We should later change to DB.GetCartContent(userID)
+	//Mock_db. We should later change to DB.GetCartContent(userID)
+	cart, ok := MockCarts[userID]
+	if !ok {
+		return []CartEntry{}
+	}
+	return cart
 }
 
 func saveCart(userID string, cart []CartEntry) {
